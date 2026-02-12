@@ -139,6 +139,7 @@ func (s *TimetableService) CreateDailyOverride(
 			payload := domain.TimetableUpdatedPayload{
 				ClassID:        classID.String(),
 				Date:           localDate.Format("2006-01-02"),
+				MatrixRoomID:   settings.MatrixRoomID,
 				UpdateTemplate: settings.UpdateTemplate,
 				Slots:          []domain.TimetableSlotPayload{slotToPayload(slot)},
 				UpdatedBy:      requesterID.String(),

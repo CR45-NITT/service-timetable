@@ -25,8 +25,10 @@ func NewIdentityHTTPClient(baseURL string, httpClient *http.Client) *IdentityHTT
 }
 
 type identityMeResponse struct {
-	User  identityUser   `json:"user"`
-	Roles []identityRole `json:"roles"`
+	User     identityUser   `json:"user"`
+	Roles    []identityRole `json:"roles"`
+	UserID   uuid.UUID      `json:"user_id"`
+	FullName string         `json:"full_name"`
 }
 
 type identityUser struct {
@@ -78,11 +80,16 @@ func (c *IdentityHTTPClient) GetMe(ctx context.Context, userID uuid.UUID) (Ident
 		roles = append(roles, IdentityRole{Name: role.Name, ClassID: role.ClassID})
 	}
 
-	if body.User.ID == uuid.Nil {
+	resolvedUserID := body.User.ID
+	if resolvedUserID == uuid.Nil {
+		resolvedUserID = body.UserID
+	}
+
+	if resolvedUserID == uuid.Nil {
 		return IdentityUser{}, errors.New("identity response missing id")
 	}
 
-	return IdentityUser{ID: body.User.ID, Roles: roles}, nil
+	return IdentityUser{ID: resolvedUserID, Roles: roles}, nil
 }
 
 func DefaultIdentityHTTPClient() *http.Client {

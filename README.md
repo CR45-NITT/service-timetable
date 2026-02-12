@@ -54,6 +54,27 @@ Body:
 }
 ```
 
+Rules:
+
+- `status` must be one of: `scheduled`, `cancelled`, `replaced`
+- if `status != cancelled`, `course_code`, `start_time`, `end_time`, and `venue` are required
+
+Responses:
+
+- `204 No Content`: override accepted
+- `400 Bad Request`: invalid header/body/time format/input
+- `403 Forbidden`: requester is not authorized for class
+- `404 Not Found`: requester or referenced entity not found
+- `409 Conflict`: conflicting change
+- `405 Method Not Allowed`: wrong HTTP method
+- `500 Internal Server Error`: unexpected error
+
+## Route Inventory
+
+This service currently exposes one HTTP route:
+
+- `POST /admin/timetable/today`
+
 ## Migrations
 
 SQL migrations live in [migrations](migrations).
