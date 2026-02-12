@@ -1,11 +1,11 @@
-FROM golang:1.21 AS builder
+FROM golang:1.25.6 AS builder
 
 WORKDIR /src
 
-COPY go.mod ./
+COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . ./
+COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags "-s -w" -o /out/service-timetable ./cmd/timetable
@@ -18,6 +18,6 @@ COPY --from=builder /out/service-timetable /service-timetable
 
 EXPOSE 8080
 
-USER 65532:65532
+USER nonroot:nonroot
 
 ENTRYPOINT ["/service-timetable"]
