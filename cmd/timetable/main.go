@@ -14,6 +14,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"service-timetable/internal/app"
+	servicemigrations "service-timetable/migrations"
 )
 
 func main() {
@@ -31,6 +32,10 @@ func main() {
 
 	if err := db.Ping(); err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
+	}
+
+	if err := servicemigrations.Up(db); err != nil {
+		log.Fatalf("failed to run migrations: %v", err)
 	}
 
 	application := app.New(db, config.IdentityBaseURL)
