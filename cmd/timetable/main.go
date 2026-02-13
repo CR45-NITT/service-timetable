@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,11 +19,16 @@ import (
 )
 
 func main() {
-	config := loadConfig()
+	logger := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
+
+	config, err := loadConfig()
+	if err != nil {
+		logger.Fatalf("config error: %v", err)
+	}
 
 	db, err := sql.Open("pgx", config.DatabaseURL)
 	if err != nil {
-		log.Fatalf("failed to open database: %v", err)
+		logger.Fatalf("failed to open database: %v", err)
 	}
 	defer db.Close()
 
@@ -31,18 +37,18 @@ func main() {
 	db.SetConnMaxLifetime(config.DBConnMaxLifetime)
 
 	if err := db.Ping(); err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		logger.Fatalf("failed to connect to database: %v", err)
 	}
 
 	if err := servicemigrations.Up(db); err != nil {
-		log.Fatalf("failed to run migrations: %v", err)
+		logger.Fatalf("failed to run migrations: %v", err)
 	}
 
 	application := app.New(db, config.IdentityBaseURL)
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	startAnnouncementLoop(shutdownCtx, application)
+	startAnnouncementLoop(shutdownCtx, application, logger)
 
 	server := &http.Server{
 		Addr:              config.HTTPAddr,
@@ -55,22 +61,22 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
-			log.Printf("http shutdown error: %v", err)
+			logger.Printf("http shutdown error: %v", err)
 		}
 	}()
 
-	log.Printf("service-timetable listening on %s", config.HTTPAddr)
+	logger.Printf("service-timetable listening on %s", config.HTTPAddr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("http server error: %v", err)
+		logger.Fatalf("http server error: %v", err)
 	}
 }
 
-func startAnnouncementLoop(ctx context.Context, application *app.App) {
+func startAnnouncementLoop(ctx context.Context, application *app.App, logger *log.Logger) {
 	ticker := time.NewTicker(1 * time.Minute)
 	go func() {
 		defer ticker.Stop()
 		if err := application.EmitDailyAnnouncementIfDue(context.Background(), time.Now()); err != nil {
-			log.Printf("announcement tick error: %v", err)
+			logger.Printf("announcement tick error: %v", err)
 		}
 		for {
 			select {
@@ -78,7 +84,7 @@ func startAnnouncementLoop(ctx context.Context, application *app.App) {
 				return
 			case now := <-ticker.C:
 				if err := application.EmitDailyAnnouncementIfDue(context.Background(), now); err != nil {
-					log.Printf("announcement tick error: %v", err)
+					logger.Printf("announcement tick error: %v", err)
 				}
 			}
 		}
@@ -94,23 +100,36 @@ type config struct {
 	DBConnMaxLifetime time.Duration
 }
 
-func loadConfig() config {
-	return config{
-		DatabaseURL:       mustEnv("DATABASE_URL"),
-		HTTPAddr:          getEnv("HTTP_ADDR", ":8080"),
-		IdentityBaseURL:   mustEnv("IDENTITY_BASE_URL"),
-		DBMaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 10),
-		DBMaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 5),
-		DBConnMaxLifetime: getEnvDuration("DB_CONN_MAX_LIFETIME", 30*time.Minute),
+func loadConfig() (config, error) {
+	var cfg config
+
+	var err error
+	if cfg.DatabaseURL, err = getRequiredEnv("DATABASE_URL"); err != nil {
+		return cfg, err
 	}
+	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8080")
+	if cfg.IdentityBaseURL, err = getRequiredEnv("IDENTITY_BASE_URL"); err != nil {
+		return cfg, err
+	}
+	if cfg.DBMaxOpenConns, err = getEnvInt("DB_MAX_OPEN_CONNS", 10); err != nil {
+		return cfg, err
+	}
+	if cfg.DBMaxIdleConns, err = getEnvInt("DB_MAX_IDLE_CONNS", 5); err != nil {
+		return cfg, err
+	}
+	if cfg.DBConnMaxLifetime, err = getEnvDuration("DB_CONN_MAX_LIFETIME", 30*time.Minute); err != nil {
+		return cfg, err
+	}
+
+	return cfg, nil
 }
 
-func mustEnv(key string) string {
-	value := os.Getenv(key)
+func getRequiredEnv(key string) (string, error) {
+	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
-		log.Fatalf("missing required environment variable: %s", key)
+		return "", &configError{message: "missing required environment variable: " + key}
 	}
-	return value
+	return value, nil
 }
 
 func getEnv(key, fallback string) string {
@@ -121,26 +140,36 @@ func getEnv(key, fallback string) string {
 	return value
 }
 
-func getEnvInt(key string, fallback int) int {
+func getEnvInt(key string, fallback int) (int, error) {
 	value := os.Getenv(key)
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		log.Fatalf("invalid int for %s: %v", key, err)
+		return 0, &configError{message: "invalid int for " + key + ": " + err.Error()}
 	}
-	return parsed
+	return parsed, nil
 }
 
-func getEnvDuration(key string, fallback time.Duration) time.Duration {
+func getEnvDuration(key string, fallback time.Duration) (time.Duration, error) {
 	value := os.Getenv(key)
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	parsed, err := time.ParseDuration(value)
 	if err != nil {
-		log.Fatalf("invalid duration for %s: %v", key, err)
+		return 0, &configError{message: "invalid duration for " + key + ": " + err.Error()}
 	}
-	return parsed
+	return parsed, nil
 }
+
+type configError struct {
+	message string
+}
+
+func (e *configError) Error() string {
+	return e.message
+}
+
+var _ error = (*configError)(nil)
