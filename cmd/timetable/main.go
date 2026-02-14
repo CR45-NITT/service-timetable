@@ -26,6 +26,21 @@ func main() {
 		logger.Fatalf("config error: %v", err)
 	}
 
+	debugEnabled := strings.EqualFold(strings.TrimSpace(config.LogLevel), "debug")
+	debugf := func(format string, args ...any) {
+		if debugEnabled {
+			logger.Printf("[DEBUG] "+format, args...)
+		}
+	}
+
+	debugf("config loaded: http_addr=%s identity_base_url=%s db_max_open=%d db_max_idle=%d db_conn_max_lifetime=%s",
+		config.HTTPAddr,
+		config.IdentityBaseURL,
+		config.DBMaxOpenConns,
+		config.DBMaxIdleConns,
+		config.DBConnMaxLifetime,
+	)
+
 	db, err := sql.Open("pgx", config.DatabaseURL)
 	if err != nil {
 		logger.Fatalf("failed to open database: %v", err)
@@ -39,10 +54,12 @@ func main() {
 	if err := db.Ping(); err != nil {
 		logger.Fatalf("failed to connect to database: %v", err)
 	}
+	debugf("database connection successful")
 
 	if err := servicemigrations.Up(db); err != nil {
 		logger.Fatalf("failed to run migrations: %v", err)
 	}
+	debugf("migrations completed successfully")
 
 	application := app.New(db, config.IdentityBaseURL)
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -94,6 +111,7 @@ func startAnnouncementLoop(ctx context.Context, application *app.App, logger *lo
 type config struct {
 	DatabaseURL       string
 	HTTPAddr          string
+	LogLevel          string
 	IdentityBaseURL   string
 	DBMaxOpenConns    int
 	DBMaxIdleConns    int
@@ -108,6 +126,7 @@ func loadConfig() (config, error) {
 		return cfg, err
 	}
 	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8080")
+	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
 	if cfg.IdentityBaseURL, err = getRequiredEnv("IDENTITY_BASE_URL"); err != nil {
 		return cfg, err
 	}
