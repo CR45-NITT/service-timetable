@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,16 +42,22 @@ ORDER BY class_id
 	for rows.Next() {
 		var entry domain.AnnouncementSettings
 		var lastDate sql.NullTime
+		var dailyAnnounceTimeRaw string
 		if err := rows.Scan(
 			&entry.ClassID,
 			&entry.MatrixRoomID,
-			&entry.DailyAnnounceTime,
+			&dailyAnnounceTimeRaw,
 			&entry.DailyTemplate,
 			&entry.UpdateTemplate,
 			&lastDate,
 		); err != nil {
 			return nil, err
 		}
+		parsedTime, err := parseClockTime(dailyAnnounceTimeRaw)
+		if err != nil {
+			return nil, err
+		}
+		entry.DailyAnnounceTime = parsedTime
 		if lastDate.Valid {
 			entry.LastAnnouncedDate = &lastDate.Time
 		}
@@ -72,10 +79,11 @@ WHERE class_id = $1
 
 	var entry domain.AnnouncementSettings
 	var lastDate sql.NullTime
+	var dailyAnnounceTimeRaw string
 	if err := r.execer.QueryRowContext(ctx, query, classID).Scan(
 		&entry.ClassID,
 		&entry.MatrixRoomID,
-		&entry.DailyAnnounceTime,
+		&dailyAnnounceTimeRaw,
 		&entry.DailyTemplate,
 		&entry.UpdateTemplate,
 		&lastDate,
@@ -85,11 +93,27 @@ WHERE class_id = $1
 		}
 		return domain.AnnouncementSettings{}, err
 	}
+	parsedTime, err := parseClockTime(dailyAnnounceTimeRaw)
+	if err != nil {
+		return domain.AnnouncementSettings{}, err
+	}
+	entry.DailyAnnounceTime = parsedTime
 	if lastDate.Valid {
 		entry.LastAnnouncedDate = &lastDate.Time
 	}
 
 	return entry, nil
+}
+
+func parseClockTime(raw string) (time.Time, error) {
+	value := raw
+	if parsed, err := time.Parse("15:04:05", value); err == nil {
+		return parsed, nil
+	}
+	if parsed, err := time.Parse("15:04", value); err == nil {
+		return parsed, nil
+	}
+	return time.Time{}, fmt.Errorf("invalid daily_announce_time value: %q", raw)
 }
 
 func (r *AnnouncementSettingsPostgresRepository) MarkAnnounced(ctx context.Context, classID uuid.UUID, date time.Time) (bool, error) {
