@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,16 +39,24 @@ ORDER BY start_time ASC
 	var slots []domain.DefaultSlot
 	for rows.Next() {
 		var slot domain.DefaultSlot
-		var startTime time.Time
-		var endTime time.Time
+		var startTimeRaw string
+		var endTimeRaw string
 		if err := rows.Scan(
 			&slot.ClassID,
 			&slot.Weekday,
 			&slot.CourseCode,
-			&startTime,
-			&endTime,
+			&startTimeRaw,
+			&endTimeRaw,
 			&slot.Venue,
 		); err != nil {
+			return nil, err
+		}
+		startTime, err := parseSlotClockTime(startTimeRaw)
+		if err != nil {
+			return nil, err
+		}
+		endTime, err := parseSlotClockTime(endTimeRaw)
+		if err != nil {
 			return nil, err
 		}
 		slot.StartTime = startTime
@@ -59,4 +68,14 @@ ORDER BY start_time ASC
 	}
 
 	return slots, nil
+}
+
+func parseSlotClockTime(raw string) (time.Time, error) {
+	if parsed, err := time.Parse("15:04:05", raw); err == nil {
+		return parsed, nil
+	}
+	if parsed, err := time.Parse("15:04", raw); err == nil {
+		return parsed, nil
+	}
+	return time.Time{}, fmt.Errorf("invalid time value: %q", raw)
 }

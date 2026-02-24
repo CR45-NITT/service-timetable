@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -87,8 +88,8 @@ ORDER BY slot_index ASC
 	var overrides []domain.DailyOverride
 	for rows.Next() {
 		var override domain.DailyOverride
-		var startTime sql.NullTime
-		var endTime sql.NullTime
+		var startTime sql.NullString
+		var endTime sql.NullString
 		var courseCode sql.NullString
 		var venue sql.NullString
 		if err := rows.Scan(
@@ -111,10 +112,18 @@ ORDER BY slot_index ASC
 			override.Venue = venue.String
 		}
 		if startTime.Valid {
-			override.StartTime = &startTime.Time
+			parsed, err := parseOptionalClockTime(startTime)
+			if err != nil {
+				return nil, err
+			}
+			override.StartTime = parsed
 		}
 		if endTime.Valid {
-			override.EndTime = &endTime.Time
+			parsed, err := parseOptionalClockTime(endTime)
+			if err != nil {
+				return nil, err
+			}
+			override.EndTime = parsed
 		}
 		overrides = append(overrides, override)
 	}
@@ -123,4 +132,18 @@ ORDER BY slot_index ASC
 	}
 
 	return overrides, nil
+}
+
+func parseOptionalClockTime(value sql.NullString) (*time.Time, error) {
+	if !value.Valid {
+		return nil, nil
+	}
+	raw := value.String
+	if parsed, err := time.Parse("15:04:05", raw); err == nil {
+		return &parsed, nil
+	}
+	if parsed, err := time.Parse("15:04", raw); err == nil {
+		return &parsed, nil
+	}
+	return nil, fmt.Errorf("invalid time value: %q", raw)
 }
