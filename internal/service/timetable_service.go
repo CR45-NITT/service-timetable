@@ -39,6 +39,19 @@ type TimetableService struct {
 	clock     func() time.Time
 }
 
+type ResolvedTimetable struct {
+	ClassID uuid.UUID
+	Date    time.Time
+	Slots   []domain.Slot
+}
+
+type DefaultSlotInput struct {
+	CourseCode string
+	StartTime  time.Time
+	EndTime    time.Time
+	Venue      string
+}
+
 func NewTimetableService(txManager repository.TxManager, identity IdentityClient) *TimetableService {
 	return &TimetableService{
 		txManager: txManager,
@@ -170,6 +183,214 @@ func (s *TimetableService) ResolveTimetable(ctx context.Context, classID uuid.UU
 		return nil
 	})
 	return resolved, err
+}
+
+func (s *TimetableService) GetResolvedToday(
+	ctx context.Context,
+	requesterID uuid.UUID,
+	classID uuid.UUID,
+) (ResolvedTimetable, error) {
+	user, err := s.identity.GetMe(ctx, requesterID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ResolvedTimetable{}, ErrNotFound
+		}
+		if errors.Is(err, ErrUnauthorized) {
+			return ResolvedTimetable{}, ErrUnauthorized
+		}
+		return ResolvedTimetable{}, err
+	}
+
+	if !isAuthorized(user, classID) {
+		return ResolvedTimetable{}, ErrUnauthorized
+	}
+
+	date := truncateToDateLocal(s.clock())
+	slots, err := s.ResolveTimetable(ctx, classID, date)
+	if err != nil {
+		return ResolvedTimetable{}, err
+	}
+
+	return ResolvedTimetable{
+		ClassID: classID,
+		Date:    date,
+		Slots:   slots,
+	}, nil
+}
+
+func (s *TimetableService) GetResolvedTodayPublic(
+	ctx context.Context,
+	classID uuid.UUID,
+) (ResolvedTimetable, error) {
+	if classID == uuid.Nil {
+		return ResolvedTimetable{}, ErrInvalidInput
+	}
+
+	date := truncateToDateLocal(s.clock())
+	slots, err := s.ResolveTimetable(ctx, classID, date)
+	if err != nil {
+		return ResolvedTimetable{}, err
+	}
+
+	return ResolvedTimetable{
+		ClassID: classID,
+		Date:    date,
+		Slots:   slots,
+	}, nil
+}
+
+func (s *TimetableService) AnnounceNow(ctx context.Context, requesterID uuid.UUID, classID uuid.UUID) error {
+	if classID == uuid.Nil {
+		return ErrInvalidInput
+	}
+
+	user, err := s.identity.GetMe(ctx, requesterID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotFound
+		}
+		if errors.Is(err, ErrUnauthorized) {
+			return ErrUnauthorized
+		}
+		return err
+	}
+
+	if !isAuthorized(user, classID) {
+		return ErrUnauthorized
+	}
+
+	date := truncateToDateLocal(s.clock())
+
+	return s.txManager.WithTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+		setting, err := repos.Settings.GetByClassID(ctx, classID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		resolved, err := s.resolveTimetableWithRepos(ctx, repos, classID, date)
+		if err != nil {
+			return err
+		}
+
+		payload := domain.DailyTimetableAnnouncedPayload{
+			ClassID:      setting.ClassID.String(),
+			Date:         date.Format("2006-01-02"),
+			MatrixRoomID: setting.MatrixRoomID,
+			Template:     setting.DailyTemplate,
+			Slots:        slotsToPayloads(resolved),
+		}
+
+		event := domain.TimetableEvent{
+			EventType: "DailyTimetableAnnounced",
+			Payload:   payload,
+		}
+
+		if err := repos.Outbox.Insert(ctx, event); err != nil {
+			return err
+		}
+
+		if err := repos.Settings.SetLastAnnouncedDate(ctx, classID, date); err != nil {
+			return err
+		}
+
+		return nil
+	})
+}
+
+func (s *TimetableService) UpdateAnnouncementSettings(
+	ctx context.Context,
+	requesterID uuid.UUID,
+	classID uuid.UUID,
+	matrixRoomID string,
+	dailyAnnounceTime time.Time,
+	dailyTemplate string,
+	updateTemplate string,
+) error {
+	if classID == uuid.Nil || matrixRoomID == "" || dailyTemplate == "" || updateTemplate == "" {
+		return ErrInvalidInput
+	}
+
+	user, err := s.identity.GetMe(ctx, requesterID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotFound
+		}
+		if errors.Is(err, ErrUnauthorized) {
+			return ErrUnauthorized
+		}
+		return err
+	}
+
+	if !isAuthorized(user, classID) {
+		return ErrUnauthorized
+	}
+
+	settings := domain.AnnouncementSettings{
+		ClassID:           classID,
+		MatrixRoomID:      matrixRoomID,
+		DailyAnnounceTime: dailyAnnounceTime,
+		DailyTemplate:     dailyTemplate,
+		UpdateTemplate:    updateTemplate,
+	}
+
+	return s.txManager.WithTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+		return repos.Settings.Upsert(ctx, settings)
+	})
+}
+
+func (s *TimetableService) ReplaceDefaultSlots(
+	ctx context.Context,
+	requesterID uuid.UUID,
+	classID uuid.UUID,
+	weekday int,
+	slots []DefaultSlotInput,
+) error {
+	if classID == uuid.Nil || weekday < 1 || weekday > 7 {
+		return ErrInvalidInput
+	}
+
+	for _, slot := range slots {
+		if slot.CourseCode == "" || slot.Venue == "" || slot.StartTime.IsZero() || slot.EndTime.IsZero() {
+			return ErrInvalidInput
+		}
+		if !slot.EndTime.After(slot.StartTime) {
+			return ErrInvalidInput
+		}
+	}
+
+	user, err := s.identity.GetMe(ctx, requesterID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotFound
+		}
+		if errors.Is(err, ErrUnauthorized) {
+			return ErrUnauthorized
+		}
+		return err
+	}
+
+	if !isAuthorized(user, classID) {
+		return ErrUnauthorized
+	}
+
+	defaults := make([]domain.DefaultSlot, 0, len(slots))
+	for _, slot := range slots {
+		defaults = append(defaults, domain.DefaultSlot{
+			ClassID:    classID,
+			Weekday:    weekday,
+			CourseCode: slot.CourseCode,
+			StartTime:  slot.StartTime,
+			EndTime:    slot.EndTime,
+			Venue:      slot.Venue,
+		})
+	}
+
+	return s.txManager.WithTx(ctx, func(ctx context.Context, repos repository.TxRepositories) error {
+		return repos.DefaultSlots.ReplaceByWeekday(ctx, classID, weekday, defaults)
+	})
 }
 
 func (s *TimetableService) EmitDailyAnnouncementIfDue(ctx context.Context, now time.Time) error {

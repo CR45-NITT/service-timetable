@@ -12,6 +12,7 @@ import (
 
 type DefaultSlotRepository interface {
 	ListByWeekday(ctx context.Context, classID uuid.UUID, weekday int) ([]domain.DefaultSlot, error)
+	ReplaceByWeekday(ctx context.Context, classID uuid.UUID, weekday int, slots []domain.DefaultSlot) error
 }
 
 type DefaultSlotPostgresRepository struct {
@@ -78,4 +79,47 @@ func parseSlotClockTime(raw string) (time.Time, error) {
 		return parsed, nil
 	}
 	return time.Time{}, fmt.Errorf("invalid time value: %q", raw)
+}
+
+func (r *DefaultSlotPostgresRepository) ReplaceByWeekday(ctx context.Context, classID uuid.UUID, weekday int, slots []domain.DefaultSlot) error {
+	const deleteQuery = `
+DELETE FROM timetable.default_slots
+WHERE class_id = $1 AND weekday = $2
+`
+
+	if _, err := r.execer.ExecContext(ctx, deleteQuery, classID, weekday); err != nil {
+		return err
+	}
+
+	if len(slots) == 0 {
+		return nil
+	}
+
+	const insertQuery = `
+INSERT INTO timetable.default_slots (
+	class_id,
+	weekday,
+	course_code,
+	start_time,
+	end_time,
+	venue
+) VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+	for _, slot := range slots {
+		if _, err := r.execer.ExecContext(
+			ctx,
+			insertQuery,
+			classID,
+			weekday,
+			slot.CourseCode,
+			slot.StartTime.Format("15:04:05"),
+			slot.EndTime.Format("15:04:05"),
+			slot.Venue,
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

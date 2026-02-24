@@ -15,6 +15,8 @@ type AnnouncementSettingsRepository interface {
 	ListAll(ctx context.Context) ([]domain.AnnouncementSettings, error)
 	GetByClassID(ctx context.Context, classID uuid.UUID) (domain.AnnouncementSettings, error)
 	MarkAnnounced(ctx context.Context, classID uuid.UUID, date time.Time) (bool, error)
+	Upsert(ctx context.Context, settings domain.AnnouncementSettings) error
+	SetLastAnnouncedDate(ctx context.Context, classID uuid.UUID, date time.Time) error
 }
 
 type AnnouncementSettingsPostgresRepository struct {
@@ -133,4 +135,47 @@ WHERE class_id = $1
 		return false, err
 	}
 	return rows > 0, nil
+}
+
+func (r *AnnouncementSettingsPostgresRepository) Upsert(ctx context.Context, settings domain.AnnouncementSettings) error {
+	const query = `
+INSERT INTO timetable.announcement_settings (
+	class_id,
+	matrix_room_id,
+	daily_announce_time,
+	daily_template,
+	update_template,
+	last_announced_date
+) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (class_id)
+DO UPDATE SET
+	matrix_room_id = EXCLUDED.matrix_room_id,
+	daily_announce_time = EXCLUDED.daily_announce_time,
+	daily_template = EXCLUDED.daily_template,
+	update_template = EXCLUDED.update_template,
+	last_announced_date = COALESCE(EXCLUDED.last_announced_date, timetable.announcement_settings.last_announced_date)
+`
+
+	_, err := r.execer.ExecContext(
+		ctx,
+		query,
+		settings.ClassID,
+		settings.MatrixRoomID,
+		settings.DailyAnnounceTime.Format("15:04:05"),
+		settings.DailyTemplate,
+		settings.UpdateTemplate,
+		settings.LastAnnouncedDate,
+	)
+	return err
+}
+
+func (r *AnnouncementSettingsPostgresRepository) SetLastAnnouncedDate(ctx context.Context, classID uuid.UUID, date time.Time) error {
+	const query = `
+UPDATE timetable.announcement_settings
+SET last_announced_date = $2
+WHERE class_id = $1
+`
+
+	_, err := r.execer.ExecContext(ctx, query, classID, date)
+	return err
 }

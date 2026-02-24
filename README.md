@@ -69,11 +69,84 @@ Responses:
 - `405 Method Not Allowed`: wrong HTTP method
 - `500 Internal Server Error`: unexpected error
 
+### GET /resolved/today?class_id=<UUID>
+
+Responses:
+
+- `200 OK`: resolved timetable for current date
+- `400 Bad Request`: missing/invalid input
+- `404 Not Found`: requester or class settings not found
+
+### POST /admin/announcements/daily/emit
+
+Headers:
+
+- `X-User-ID: <UUID>`
+
+Body:
+
+```
+{
+	"class_id": "uuid"
+}
+```
+
+Queues a `DailyTimetableAnnounced` event immediately and updates `last_announced_date` for today.
+
+### PUT /admin/announcement-settings
+
+Headers:
+
+- `X-User-ID: <UUID>`
+
+Body:
+
+```
+{
+	"class_id": "uuid",
+	"matrix_room_id": "!room:matrix.example.org",
+	"daily_announce_time": "08:00",
+	"daily_template": "template text",
+	"update_template": "template text"
+}
+```
+
+Creates or updates announcement settings for a class.
+
+### PUT /admin/default-slots
+
+Headers:
+
+- `X-User-ID: <UUID>`
+
+Body:
+
+```
+{
+	"class_id": "uuid",
+	"weekday": 1,
+	"slots": [
+		{
+			"course_code": "CS101",
+			"start_time": "09:00",
+			"end_time": "09:50",
+			"venue": "E-201"
+		}
+	]
+}
+```
+
+Replaces all default slots for the given class and weekday.
+
 ## Route Inventory
 
-This service currently exposes one HTTP route:
+This service currently exposes these HTTP routes:
 
+- `GET /resolved/today`
 - `POST /admin/timetable/today`
+- `POST /admin/announcements/daily/emit`
+- `PUT /admin/announcement-settings`
+- `PUT /admin/default-slots`
 
 ## Migrations
 
